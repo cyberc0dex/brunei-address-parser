@@ -129,7 +129,6 @@
 const WHITELIST = [
   "KAMPONG AYER",
   "JALAN SULTAN",           // example: contains no inner marker but good to protect
-  "SIMPANG TIGA",           // "TIGA" is safe but good practice to whitelist compound names
 ];
 
 /**
@@ -213,15 +212,31 @@ function parseAddress(raw) {
     log.push("Postcode found: " + result.postcode + " | Remaining: " + s);
   }
   
-  // --- Phase 2b: District Sniper ---
-  for (const district of DISTRICTS) {
-    if (s.includes(district)) {
-      result.district = district;
-      s = s.replace(district, " ").replace(/\s+/g, " ").trim();
-      log.push("District found: " + result.district + " | Remaining: " + s);
-      break;
-    }
+// --- Phase 2b: District Sniper ---
+// Guard: only snipe a district name if it is NOT preceded by a street/place marker.
+// This prevents "Jalan Tutong" from losing "Tutong" to the district bucket.
+const streetPrefixes = [
+  "JALAN", "JLN"
+];
+
+for (const district of DISTRICTS) {
+  const idx = s.indexOf(district);
+  if (idx === -1) continue;
+
+  // Look at the word(s) immediately before the district name in the string
+  const before = s.slice(0, idx).trim().split(" ");
+  const precedingWord = before[before.length - 1] || "";
+
+  if (streetPrefixes.includes(precedingWord)) {
+    log.push("District snipe BLOCKED for [" + district + "] — preceded by street marker: " + precedingWord);
+    continue; // skip — it's part of a street/place name, not a standalone district
   }
+
+  result.district = district;
+  s = s.replace(district, " ").replace(/\s+/g, " ").trim();
+  log.push("District found: " + result.district + " | Remaining: " + s);
+  break;
+}
 
   // --- Phase 2c: Country Sniper ---
   for (const country of COUNTRIES) {
