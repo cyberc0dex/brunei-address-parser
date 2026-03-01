@@ -1,0 +1,354 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Brunei Address Parser</title>
+  <style>
+    body {
+      font-family: monospace;
+      max-width: 700px;
+      margin: 40px auto;
+      padding: 0 20px;
+      background: #fff;
+      color: #111;
+    }
+    h1 { font-size: 1.2rem; margin-bottom: 4px; }
+    p.subtitle { font-size: 0.8rem; color: #666; margin-top: 0; margin-bottom: 20px; }
+    textarea {
+      width: 100%;
+      height: 100px;
+      font-family: monospace;
+      font-size: 0.95rem;
+      padding: 8px;
+      box-sizing: border-box;
+      border: 1px solid #aaa;
+      resize: vertical;
+    }
+    button {
+      margin-top: 8px;
+      padding: 7px 20px;
+      font-family: monospace;
+      font-size: 0.95rem;
+      background: #111;
+      color: #fff;
+      border: none;
+      cursor: pointer;
+    }
+    button:hover { background: #333; }
+    button#clearBtn {
+      background: #fff;
+      color: #111;
+      border: 1px solid #aaa;
+      margin-left: 8px;
+    }
+    button#clearBtn:hover { background: #f0f0f0; }
+    #output {
+      margin-top: 24px;
+      display: none;
+    }
+    #output h2 { font-size: 0.9rem; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 8px; }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.9rem;
+    }
+    th, td {
+      text-align: left;
+      padding: 6px 10px;
+      border: 1px solid #ddd;
+    }
+    th { background: #f4f4f4; width: 35%; }
+    td { word-break: break-word; }
+    td.empty { color: #bbb; font-style: italic; }
+    #debugSection {
+      margin-top: 16px;
+    }
+    #debugToggle {
+      font-size: 0.78rem;
+      color: #666;
+      cursor: pointer;
+      background: none;
+      border: none;
+      padding: 0;
+      text-decoration: underline;
+    }
+    #debugLog {
+      display: none;
+      margin-top: 8px;
+      padding: 10px;
+      background: #f9f9f9;
+      border: 1px solid #ddd;
+      font-size: 0.75rem;
+      line-height: 1.6;
+      white-space: pre-wrap;
+      max-height: 250px;
+      overflow-y: auto;
+    }
+  </style>
+</head>
+<body>
+
+<h1>Brunei Address Parser</h1>
+<p class="subtitle">Extracts structured fields from messy Brunei address strings.</p>
+
+<textarea id="inputAddress" placeholder="Enter address here"></textarea>
+<br>
+<button id="parseBtn" onclick="runParser()">Parse</button>
+<button id="clearBtn" onclick="clearAll()">Clear</button>
+
+<div id="output">
+  <h2>Parsed Result</h2>
+  <table id="resultTable">
+    <tr><th>House Number</th><td id="r_house"></td></tr>
+    <tr><th>Simpang</th><td id="r_spg"></td></tr>
+    <tr><th>Jalan</th><td id="r_jln"></td></tr>
+    <tr><th>Kampong</th><td id="r_kg"></td></tr>
+    <tr><th>Postcode</th><td id="r_postcode"></td></tr>
+    <tr><th>District</th><td id="r_district"></td></tr>
+    <tr><th>Country</th><td id="r_country"></td></tr>
+  </table>
+
+  <div id="debugSection">
+    <button id="debugToggle" onclick="toggleDebug()">▶ Show debug log</button>
+    <div id="debugLog"></div>
+  </div>
+</div>
+
+<script>
+// ============================================================
+// CONFIGURATION — Edit these sections freely without touching
+// the parser logic below.
+// ============================================================
+
+/**
+ * WHITELIST: Known place names that contain marker words inside them.
+ * These are protected from being split by the state machine.
+ * Add new entries as plain uppercase strings.
+ */
+const WHITELIST = [
+  "KAMPONG AYER",
+  "JALAN SULTAN",           // example: contains no inner marker but good to protect
+  "SIMPANG TIGA",           // "TIGA" is safe but good practice to whitelist compound names
+];
+
+/**
+ * DISTRICTS: Full list of Brunei districts.
+ * Order matters — longer/more-specific phrases first.
+ */
+const DISTRICTS = [
+  "BRUNEI MUARA",
+  "BRUNEI-MUARA",
+  "TEMBURONG",
+  "TUTONG",
+  "BELAIT",
+];
+
+/**
+ * COUNTRY VARIANTS: Longer phrases first.
+ */
+const COUNTRIES = [
+  "NEGARA BRUNEI DARUSSALAM",
+  "BRUNEI DARUSSALAM",
+  "BRUNEI",
+];
+
+/**
+ * ALIAS MAP: Maps raw tokens to internal marker tokens.
+ * Keys are the raw uppercase words to match.
+ * Values are the marker token they resolve to.
+ */
+const ALIAS_MAP = {
+  // House / Unit markers
+  "NO"      : "MARKER_HOUSE",
+  "NO."     : "MARKER_HOUSE",  // handled after period removal → becomes "NO"
+  "NOMBOR"  : "MARKER_HOUSE",
+  "NUMBER"  : "MARKER_HOUSE",
+  "UNIT"    : "MARKER_HOUSE",
+  "BLOCK"   : "MARKER_HOUSE",
+  "BLK"     : "MARKER_HOUSE",
+  // Simpang markers
+  "SIMPANG" : "MARKER_SPG",
+  "SPG"     : "MARKER_SPG",
+  // Jalan markers
+  "JALAN"   : "MARKER_JLN",
+  "JLN"     : "MARKER_JLN",
+  // Kampong markers
+  "KAMPONG" : "MARKER_KG",
+  "KAMPUNG" : "MARKER_KG",
+  "KG"      : "MARKER_KG",
+  "KPG"     : "MARKER_KG",
+};
+
+// ============================================================
+// PARSER CORE — Modify with care.
+// ============================================================
+
+function parseAddress(raw) {
+  const log = [];
+  const result = {
+    houseNumber : "",
+    simpang     : "",
+    jalan       : "",
+    kampong     : "",
+    postcode    : "",
+    district    : "",
+    country     : "",
+  };
+
+  // --- Phase 1: Normalise ---
+  let s = raw.toUpperCase();
+  s = s.replace(/[\r\n]+/g, " ");
+  s = s.replace(/,/g, " ");
+  s = s.replace(/\./g, " ");
+  s = s.replace(/\s+/g, " ").trim();
+  log.push("After normalisation: " + s);
+
+
+  // --- Phase 2a: Postcode Sniper ---
+  const postcodeMatch = s.match(/\b[A-Z]{2}\d{4}\b/);
+  if (postcodeMatch) {
+    result.postcode = postcodeMatch[0];
+    s = s.replace(postcodeMatch[0], " ").replace(/\s+/g, " ").trim();
+    log.push("Postcode found: " + result.postcode + " | Remaining: " + s);
+  }
+  
+  // --- Phase 2b: District Sniper ---
+  for (const district of DISTRICTS) {
+    if (s.includes(district)) {
+      result.district = district;
+      s = s.replace(district, " ").replace(/\s+/g, " ").trim();
+      log.push("District found: " + result.district + " | Remaining: " + s);
+      break;
+    }
+  }
+
+  // --- Phase 2c: Country Sniper ---
+  for (const country of COUNTRIES) {
+    if (s.includes(country)) {
+      result.country = country === "BRUNEI" ? "BRUNEI DARUSSALAM" : country;
+      s = s.replace(country, " ").replace(/\s+/g, " ").trim();
+      log.push("Country found: " + result.country + " | Remaining: " + s);
+      break;
+    }
+  }
+
+  // --- Phase 2d: Attached Numbers Fix ---
+  s = s.replace(/([A-Z])(\d)/g, "$1 $2");
+  s = s.replace(/(\d)([A-Z])/g, "$1 $2");
+  s = s.replace(/\s+/g, " ").trim();
+  log.push("After attached-numbers fix: " + s);
+
+  // --- Phase 4a: Whitelist Protection ---
+  // Replace known compound names with placeholder tokens so the
+  // state machine sees them as single opaque words.
+  const whitelistRestore = {};
+  let wlIndex = 0;
+  for (const entry of WHITELIST) {
+    if (s.includes(entry)) {
+      const token = "WLTOKEN" + wlIndex;
+      whitelistRestore[token] = entry;
+      s = s.replace(new RegExp(entry, "g"), token);
+      log.push("Whitelist protected: [" + entry + "] → " + token);
+      wlIndex++;
+    }
+  }
+  s = s.replace(/\s+/g, " ").trim();
+
+  // --- Phase 3: Alias Mapping ---
+  // Replace each token with its marker equivalent.
+  let words = s.split(" ");
+  words = words.map(w => ALIAS_MAP[w] || w);
+  log.push("After alias mapping: " + words.join(" "));
+
+  // --- Phase 4b: State Machine ---
+  let activeBucket = "houseNumber"; // default fallback bucket
+
+  for (const word of words) {
+    switch (word) {
+      case "MARKER_HOUSE": activeBucket = "houseNumber"; break;
+      case "MARKER_SPG"  : activeBucket = "simpang";     break;
+      case "MARKER_JLN"  : activeBucket = "jalan";       break;
+      case "MARKER_KG"   : activeBucket = "kampong";     break;
+      default:
+        // Restore whitelist token if needed
+        const restored = whitelistRestore[word] || word;
+        result[activeBucket] = result[activeBucket]
+          ? result[activeBucket] + " " + restored
+          : restored;
+    }
+  }
+
+  log.push("--- Final Result ---");
+  for (const [k, v] of Object.entries(result)) {
+    log.push(k + ": " + (v || "(empty)"));
+  }
+
+  return { result, log };
+}
+
+// ============================================================
+// UI
+// ============================================================
+
+function runParser() {
+  const raw = document.getElementById("inputAddress").value.trim();
+  if (!raw) return;
+
+  const { result, log } = parseAddress(raw);
+
+  const fields = {
+    r_house    : result.houseNumber,
+    r_spg      : result.simpang,
+    r_jln      : result.jalan,
+    r_kg       : result.kampong,
+    r_postcode : result.postcode,
+    r_district : result.district,
+    r_country  : result.country,
+  };
+
+  for (const [id, val] of Object.entries(fields)) {
+    const cell = document.getElementById(id);
+    if (val) {
+      cell.textContent = val;
+      cell.className = "";
+    } else {
+      cell.textContent = "—";
+      cell.className = "empty";
+    }
+  }
+
+  document.getElementById("debugLog").textContent = log.join("\n");
+  document.getElementById("output").style.display = "block";
+
+  // Reset debug panel to closed on each new parse
+  document.getElementById("debugLog").style.display = "none";
+  document.getElementById("debugToggle").textContent = "▶ Show debug log";
+}
+
+function clearAll() {
+  document.getElementById("inputAddress").value = "";
+  document.getElementById("output").style.display = "none";
+}
+
+function toggleDebug() {
+  const log = document.getElementById("debugLog");
+  const btn = document.getElementById("debugToggle");
+  if (log.style.display === "none") {
+    log.style.display = "block";
+    btn.textContent = "▼ Hide debug log";
+  } else {
+    log.style.display = "none";
+    btn.textContent = "▶ Show debug log";
+  }
+}
+
+// Allow Enter key in textarea to not submit — user may want multiline input.
+// Parse is triggered only by the button (or could add Ctrl+Enter below).
+document.getElementById("inputAddress").addEventListener("keydown", function(e) {
+  if (e.key === "Enter" && e.ctrlKey) runParser();
+});
+</script>
+
+</body>
+</html>
