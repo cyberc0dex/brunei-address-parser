@@ -196,7 +196,9 @@ function parseAddress(raw) {
   };
 
   // --- Phase 1: Normalise ---
-  let s = raw.toUpperCase();
+  let s = raw;
+  s = s.replace(/\\n/g, " ").replace(/\\r/g, " "); // replaces literal \n \r
+  s = s.toUpperCase();
   s = s.replace(/[\r\n]+/g, " ");
   s = s.replace(/,/g, " ");
   s = s.replace(/\./g, " ");
