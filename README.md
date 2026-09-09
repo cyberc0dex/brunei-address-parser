@@ -164,5 +164,4 @@ const POSTCODE_MAP = [
 ---
 
 ## Note
-* Free to use, modify, and distribute.
-* Although I have reviewed the design process and code flow, the majority of this was vibe coded with Gemini + Claude. Consider this as a test application only.
+* Consider this as a test application only, majority of this was vibe coded with Gemini + Claude.
